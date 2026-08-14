@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-desktop",
   "description": "DeepSeek Harness desktop application with tray-owned Host lifecycle",
-  "version": "0.1.0-rc.5",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "main": "lib/main.js",
@@ -50,6 +50,7 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "icon": "build/icon.png",
+      "artifactName": "DeepSeek-Harness-${version}-${arch}.${ext}",
       "notarize": true,
       "target": [
         "dir"
@@ -57,8 +58,9 @@
     },
     "win": {
       "icon": "build/icon.png",
+      "artifactName": "DeepSeek-Harness-${version}.${ext}",
       "target": [
-        "dir"
+        "nsis"
       ]
     },
     "linux": {

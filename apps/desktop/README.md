@@ -26,6 +26,8 @@ The local packaging command performs the complete repository build, stages the H
 pnpm run package:desktop
 ```
 
+`pnpm run dist:desktop` produces the distributable from the same staged runtime: a Windows NSIS installer (`DeepSeek-Harness-<version>.exe`); macOS and Linux distributions remain unpacked applications.
+
 Packaged applications run the staged `@deepseek-ai/dsh` CLI in a separate process through Electron's Node mode. The application therefore retains the supervised-Host lifecycle without shipping a second Node executable. An `afterPack` check rejects the package before signing when the staged CLI entry or Web frontend entry is absent. Both macOS and Windows use the exact tracked `apps/desktop/build/icon.png` source; the repository does not preprocess or commit platform-specific icon variants.
 
 ### Signed macOS DMG
@@ -70,7 +72,7 @@ rmdir "$MOUNT_POINT"
 
 The first desktop assembly uses a loopback HTTP Host. The renderer and Host protocol remain unchanged so the application can replace the transport with the IPC carrier reserved by the GUI architecture without changing product features.
 
-The signed installer path currently targets macOS. Windows and Linux packaging creates unpacked applications; their installer formats and distribution signing remain release work.
+The signed installer path targets macOS. Windows distribution produces an unsigned NSIS installer; Linux packaging creates an unpacked application. Windows installer signing remains release work.
 
 ## Model Experience
 

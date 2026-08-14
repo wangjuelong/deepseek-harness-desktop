@@ -26,6 +26,8 @@ pnpm run dev:desktop
 pnpm run package:desktop
 ```
 
+`pnpm run dist:desktop` 基于同一暂存运行时生成可分发的产物:Windows 下是 NSIS 安装器(`DeepSeek-Harness-<version>.exe`);macOS 与 Linux 仍为未封装应用。
+
 打包后的应用通过 Electron 的 Node 模式，在独立进程内运行已暂存的 `@deepseek-ai/dsh` CLI。应用因此保留受 supervisor 管理的 Host 生命周期，无需携带第二个 Node 可执行文件。如果暂存的 CLI 入口或 Web 前端入口缺失，`afterPack` 检查会在签名前拒绝该产物。macOS 和 Windows 都使用受跟踪的 `apps/desktop/build/icon.png` 原始文件；仓库不预处理图标，也不提交平台专用图标变体。
 
 ### 已签名的 macOS DMG
@@ -70,7 +72,7 @@ rmdir "$MOUNT_POINT"
 
 首个桌面装配使用回环 HTTP Host。renderer 和 Host 协议保持不变，因此后续可替换为 GUI 架构预留的 IPC carrier，而无需改动产品功能。
 
-已签名安装包的发布路径目前只面向 macOS。Windows 和 Linux 打包会生成未封装应用；它们的安装包格式与发布签名仍属于发布工作。
+已签名安装包的发布路径目前只面向 macOS。Windows 发布产物为未签名的 NSIS 安装器；Linux 打包仍生成未封装应用。Windows 安装器签名仍属于发布工作。
 
 ## 模型体验
 
