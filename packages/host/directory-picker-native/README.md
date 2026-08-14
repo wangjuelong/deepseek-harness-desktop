@@ -18,3 +18,4 @@ None; this package neither assembles nor sends a provider request.
 
 - **Linux requires desktop tooling** — with neither Zenity nor KDialog installed, `pick` rejects with an actionable error; it does not fall back to a typed-path prompt (the browse backend is that fallback at the composition level).
 - **Windows has no mechanism fallback** — the child-process picker through packaged koffi is the only native tier, so a COM refusal or dialog crash surfaces the failure. The browse backend remains the fallback at the composition level.
+- **koffi is pinned to 3.1.1** — the win32-x64 prebuilt binaries of koffi 3.1.3+ crash with an access violation inside `koffi.load()` ([upstream regression](https://github.com/Koromix/koffi/issues/275)); the desktop runtime re-resolves `^` ranges at deploy time, so only an exact pin keeps the packaged picker on the working build. Revisit the pin when upstream ships a fixed win32-x64 prebuilt.

@@ -5492,7 +5492,7 @@ importers:
         specifier: workspace:^
         version: link:../../util/native-command
       koffi:
-        specifier: ^3.1.0
+        specifier: 3.1.1
         version: 3.1.1
     devDependencies:
       '@deepseek-ai/cordis':

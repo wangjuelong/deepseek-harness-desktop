@@ -70,7 +70,12 @@ describe('pickWin32Directory', () => {
     const silent = harness()
     const exiting = pickWin32Directory(live(), silent.internals)
     silent.worker.emit('exit', 0)
-    await expect(exiting).rejects.toThrow('exited before reporting a result')
+    await expect(exiting).rejects.toThrow('exited (code 0) before reporting a result')
+
+    const crashExited = harness()
+    const crashExit = pickWin32Directory(live(), crashExited.internals)
+    crashExited.worker.emit('exit', 1)
+    await expect(crashExit).rejects.toThrow('exited (code 1) before reporting a result')
   })
 
   it('settles once: a late exit after the result is inert', async () => {

@@ -6,7 +6,9 @@
  * manual foreground call. Protocol: `{kind:'showing',threadId}` right
  * before the blocking call (the driver's abort lever needs the native
  * thread id), then exactly one of `{kind:'done',path}` or
- * `{kind:'error',message}`.
+ * `{kind:'error',message}`. The IPC channel closes only after the terminal
+ * message is flushed: closing after `showing` would exit this process (see
+ * the `disconnect` handler) before the outcome write is issued.
  */
 
 import { loadWin32DialogBindings } from './win32-dialog-bindings.ts'
@@ -27,10 +29,28 @@ if (process.send === undefined) throw new Error('win32-dialog-worker must run as
 // node's internal `send` reads `this.connected`, so bind the receiver.
 const send = process.send.bind(process)
 
-const post = (message: Win32DialogWorkerMessage): void => {
-  // Flush before closing the channel; the process exits when the loop drains.
-  /* v8 ignore next 3 -- disconnect needs a live IPC channel the unit lane must not sever (built-worker.e2e.ts owns the real close path). */
-  send(message, () => { if (process.connected) process.disconnect() })
+/** A terminal message: the conversation settled, or the surface failed. */
+type Win32DialogWorkerOutcome = Exclude<Win32DialogWorkerMessage, { kind: 'showing'; threadId: number }>
+
+/**
+ * Post the `showing` notice. The channel stays open: the driver needs the
+ * thread id while the dialog blocks, and the terminal outcome is still due.
+ * @param threadId - the dialog thread's native id.
+ */
+const postShowing = (threadId: number): void => {
+  send({ kind: 'showing', threadId })
+}
+
+/**
+ * Post the terminal outcome, then close the channel once the message is
+ * flushed — the `disconnect` handler below exits this process, and closing
+ * before the write completes would drop the outcome the driver awaits.
+ * @param message - the terminal `done` or `error` message.
+ */
+const postOutcome = (message: Win32DialogWorkerOutcome): void => {
+  send(message, () => {
+    if (process.connected) process.disconnect()
+  })
 }
 
 // A settled driver (or a dead parent) must not orphan a dialog still on screen.
@@ -41,12 +61,10 @@ process.on('disconnect', () => process.exit(0))
 void (async () => {
   try {
     const bindings = await loadWin32DialogBindings()
-    const path = runFolderDialog(bindings, title, (threadId) => {
-      post({ kind: 'showing', threadId } satisfies Win32DialogWorkerMessage)
-    })
-    post({ kind: 'done', path } satisfies Win32DialogWorkerMessage)
+    const path = runFolderDialog(bindings, title, postShowing)
+    postOutcome({ kind: 'done', path })
   } catch (error: unknown) {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
-    post({ kind: 'error', message } satisfies Win32DialogWorkerMessage)
+    postOutcome({ kind: 'error', message })
   }
 })()

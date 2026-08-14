@@ -20,7 +20,12 @@ interface Manifest {
 
 async function run(command: string, args: readonly string[]): Promise<void> {
   await new Promise<void>((accept, reject) => {
-    const child = spawn(command, args, { cwd: repositoryRoot, env: { ...process.env, CI: 'true' }, stdio: 'inherit' })
+    // Local build workaround: on win32 Node 25, spawning `pnpm.cmd` without a
+    // shell throws EINVAL; with the shell, cmd.exe splits unquoted tokens, so
+    // any token containing whitespace is quoted (safe: none embed quotes).
+    const quote = (token: string): string => /\s/.test(token) ? `"${token}"` : token
+    const invoked = process.platform === 'win32' ? [quote(command), ...args.map(quote)] : [command, ...args]
+    const child = spawn(invoked[0]!, invoked.slice(1), { cwd: repositoryRoot, env: { ...process.env, CI: 'true' }, stdio: 'inherit', shell: process.platform === 'win32' })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       if (code === 0) accept()
@@ -86,7 +91,8 @@ async function deploy(): Promise<void> {
   const savedWorkspaceState = existsSync(workspaceState) ? await readFile(workspaceState) : undefined
   try {
     await run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', [
-      '--config.verify-deps-before-run=false', '--filter', deployPackage, 'deploy', '--legacy', '--prod',
+      '--config.verify-deps-before-run=false', '--config.allow-unused-patches=true', '--ignore-scripts',
+      '--filter', deployPackage, 'deploy', '--legacy', '--prod',
       '--config.node-linker=hoisted', '--config.auto-install-peers=false', '--config.link-workspace-packages=true', staging,
     ])
   } finally {

@@ -59,7 +59,6 @@ interface FakePtr { kind: string; [key: string]: unknown }
 function installFakeKoffi(world: ComWorld): void {
   const dialogPtr: FakePtr = { kind: 'dialog' }
   const itemPtr: FakePtr = { kind: 'item' }
-  const namePtr: FakePtr = { kind: 'name', text: world.path }
   const outBuffers = new Map<unknown, FakePtr>()
 
   const dispatch = (self: FakePtr, slot: number, args: unknown[]): number => {
@@ -80,7 +79,8 @@ function installFakeKoffi(world: ComWorld): void {
     switch (slot) {
       case 5: {
         if (world.getDisplayNameHr < 0) return world.getDisplayNameHr
-        ;(args[1] as unknown[])[0] = namePtr
+        // koffi's `_Out_ str16 *` surfaces the path as a JS string.
+        ;(args[1] as unknown[])[0] = world.path
         return 0
       }
       case 2: world.released.push('item'); return 0
@@ -175,7 +175,9 @@ describe('loadWin32DialogBindings over the fake COM world', () => {
     expect(world.titles).toEqual(['选择工作区目录'])
     expect(world.options).toHaveLength(1)
     expect(showing).toHaveBeenCalledWith(31337)
-    expect(world.freed).toHaveLength(1)
+    // koffi's `_Out_ str16 *` owns the display-name buffer; the binding frees
+    // nothing itself (the shell item and dialog releases still prove hygiene).
+    expect(world.freed).toHaveLength(0)
     expect(world.released).toEqual(['item', 'dialog'])
     expect(world.uninitialized).toBe(1)
   })
@@ -266,15 +268,34 @@ describe('closeThreadWindows over the fake COM world', () => {
 
 describe('the worker entry over a mocked process boundary', () => {
   const originalSend = process.send?.bind(process)
+  const originalDisconnect = process.disconnect?.bind(process)
   const originalTitle = process.env.DSH_DIALOG_TITLE
+
+  /** Fake bindings that complete a conversation with a fixed path. */
+  const successBindings = (): typeof import('../src/win32-dialog-bindings.ts') => ({
+    closeThreadWindows: async () => undefined,
+    loadWin32DialogBindings: async () => ({
+      setThreadDpiAwareness: () => undefined,
+      coInitializeSta: () => 0,
+      coUninitialize: () => undefined,
+      currentThreadId: () => 11,
+      createFolderDialog: () => ({
+        setOptions: () => 0,
+        setTitle: () => 0,
+        show: () => 0,
+        resultPath: () => ({ hr: 0, path: 'C:\\from-worker' }),
+        release: () => undefined,
+      }),
+    }),
+  })
 
   const installBoundary = (): { posted: { kind: string; message?: string }[] } => {
     const posted: { kind: string; message?: string }[] = []
     process.env.DSH_DIALOG_TITLE = 'Pick'
-    // Never invoke the post callback: it runs the worker's disconnect(), and
-    // this process is IPC-connected under the forks pool — severing vitest's
-    // own channel would kill the test worker. The real close lifecycle
-    // belongs to built-worker.e2e.ts.
+    // Never invoke the terminal post's callback: it runs the worker's
+    // disconnect(), and this process is IPC-connected under the forks pool —
+    // severing vitest's own channel would kill the test worker. The real
+    // close lifecycle belongs to built-worker.e2e.ts.
     ;(process as { send?: unknown }).send = (message: { kind: string }) => {
       posted.push(message)
       return true
@@ -285,6 +306,8 @@ describe('the worker entry over a mocked process boundary', () => {
   afterEach(() => {
     delete (process as { send?: unknown }).send
     if (originalSend !== undefined) (process as { send?: unknown }).send = originalSend
+    delete (process as { disconnect?: unknown }).disconnect
+    if (originalDisconnect !== undefined) (process as { disconnect?: unknown }).disconnect = originalDisconnect
     if (originalTitle === undefined) delete process.env.DSH_DIALOG_TITLE
     else process.env.DSH_DIALOG_TITLE = originalTitle
     vi.doUnmock('../src/win32-dialog-bindings.ts')
@@ -293,26 +316,69 @@ describe('the worker entry over a mocked process boundary', () => {
 
   it('posts showing then done for a completed conversation', async () => {
     const { posted } = installBoundary()
-    vi.doMock('../src/win32-dialog-bindings.ts', () => ({
-      loadWin32DialogBindings: async () => ({
-        setThreadDpiAwareness: () => undefined,
-        coInitializeSta: () => 0,
-        coUninitialize: () => undefined,
-        currentThreadId: () => 11,
-        createFolderDialog: () => ({
-          setOptions: () => 0,
-          setTitle: () => 0,
-          show: () => 0,
-          resultPath: () => ({ hr: 0, path: 'C:\\from-worker' }),
-          release: () => undefined,
-        }),
-      }),
-    }))
+    vi.doMock('../src/win32-dialog-bindings.ts', successBindings)
     await import('../src/win32-dialog-worker.ts')
     expect(posted).toEqual([
       { kind: 'showing', threadId: 11 },
       { kind: 'done', path: 'C:\\from-worker' },
     ])
+  })
+
+  it('keeps the channel open through the showing notice and closes it only after the terminal message is flushed', async () => {
+    const log: string[] = []
+    process.env.DSH_DIALOG_TITLE = 'Pick'
+    ;(process as { send?: unknown }).send = (message: { kind: string }, callback?: () => void) => {
+      log.push(`post:${message.kind}`)
+      // Invoke the flush callback and spy on the worker's disconnect, so the
+      // channel-lifetime policy is observable without severing this process's
+      // real IPC channel.
+      callback?.()
+      return true
+    }
+    ;(process as { disconnect?: unknown }).disconnect = () => { log.push('disconnect') }
+    vi.doMock('../src/win32-dialog-bindings.ts', successBindings)
+    await import('../src/win32-dialog-worker.ts')
+    // The showing notice must NOT close the channel: the child is still
+    // blocked in the modal Show and the outcome is due. Closing after showing
+    // was the regression — the worker exited before the done write was issued
+    // and the driver reported "exited before reporting a result".
+    expect(log).toEqual(['post:showing', 'post:done', 'disconnect'])
+  })
+
+  it('does not close the channel when the driver is already gone', async () => {
+    const log: string[] = []
+    let failBindings!: () => void
+    process.env.DSH_DIALOG_TITLE = 'Pick'
+    // The worker binds `process.send` at module load, so the mocks must be
+    // in place before the import; the dead-parent state (`process.connected`
+    // false) is staged after it, and only across the microtask burst below —
+    // the vitest fork's own IPC treats a false `connected` as a severed
+    // channel and the fork exits if it observes that state on the event loop.
+    ;(process as { send?: unknown }).send = (message: { kind: string }, callback?: () => void) => {
+      log.push(`post:${message.kind}`)
+      callback?.()
+      return true
+    }
+    ;(process as { disconnect?: unknown }).disconnect = () => { log.push('disconnect') }
+    vi.doMock('../src/win32-dialog-bindings.ts', () => ({
+      loadWin32DialogBindings: () => new Promise<never>((_resolve, reject) => {
+        failBindings = () => { reject(new Error('no ole32 here')) }
+      }),
+    }))
+    await import('../src/win32-dialog-worker.ts')
+    const originalConnected = Object.getOwnPropertyDescriptor(process, 'connected')
+    Object.defineProperty(process, 'connected', { value: false, configurable: true })
+    try {
+      failBindings()
+      await Promise.resolve()
+    } finally {
+      if (originalConnected === undefined) delete (process as { connected?: unknown }).connected
+      else Object.defineProperty(process, 'connected', originalConnected)
+    }
+    // The orphan guard exits this process via the channel's own 'disconnect'
+    // event; the flush callback must not call disconnect() on a dead channel
+    // (it would throw ERR_IPC_DISCONNECTED).
+    expect(log).toEqual(['post:error'])
   })
 
   it('posts the failure message when the native surface cannot load', async () => {
